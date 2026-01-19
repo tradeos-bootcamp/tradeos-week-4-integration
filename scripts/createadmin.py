@@ -1,6 +1,7 @@
 ﻿#!/usr/bin/env python3
 from app.crud.user import create_user
-from app.db.session import SessionLocal
+#from app.db.session import SessionLocal
+from app.db import SessionLocal
 from app.schemas.user import UserCreate
 # Создать админа
 db = SessionLocal()
