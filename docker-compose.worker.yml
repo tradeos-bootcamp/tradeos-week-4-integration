@@ -1,0 +1,28 @@
+version: '3.8'
+
+services:
+  celery-worker-sync:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-tradeos_user}:${POSTGRES_PASSWORD:-tradeos_password}@postgres/${POSTGRES_DB:-tradeos_db}
+      REDIS_URL: redis://redis:6379/0
+    command: celery -A app.tasks.celery_app worker --loglevel=info --concurrency=2 --queues=sync
+    deploy:
+      replicas: 2
+    networks:
+      - tradeos-network
+
+  celery-worker-notifications:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-tradeos_user}:${POSTGRES_PASSWORD:-tradeos_password}@postgres/${POSTGRES_DB:-tradeos_db}
+      REDIS_URL: redis://redis:6379/0
+    command: celery -A app.tasks.celery_app worker --loglevel=info --concurrency=4 --queues=notifications
+    deploy:
+      replicas: 1
+    networks:
+      - tradeos-network

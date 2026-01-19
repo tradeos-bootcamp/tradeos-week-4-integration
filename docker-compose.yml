@@ -1,0 +1,141 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-tradeos_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-tradeos_password}
+      POSTGRES_DB: ${POSTGRES_DB:-tradeos_db}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./backups:/backups
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-tradeos_user}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - tradeos-network
+
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - tradeos-network
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-tradeos_user}:${POSTGRES_PASSWORD:-tradeos_password}@postgres/${POSTGRES_DB:-tradeos_db}
+      REDIS_URL: redis://redis:6379/0
+      SECRET_KEY: ${SECRET_KEY}
+      ONEC_BASE_URL: ${ONEC_BASE_URL:-http://host.docker.internal:8080}
+      ONEC_API_KEY: ${ONEC_API_KEY}
+    ports:
+      - "8000:8000"
+      - "8001:8001"  # WebSocket порт
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./app:/app
+      - ./logs:/app/logs
+      - ./uploads:/app/uploads
+    command: >
+      sh -c "
+        alembic upgrade head &&
+        python scripts/create_admin.py &&
+        python scripts/create_test_integration.py &&
+        uvicorn app.main:app --host 0.0.0.0 --port 8000
+      "
+    networks:
+      - tradeos-network
+
+  celery-worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-tradeos_user}:${POSTGRES_PASSWORD:-tradeos_password}@postgres/${POSTGRES_DB:-tradeos_db}
+      REDIS_URL: redis://redis:6379/0
+      SECRET_KEY: ${SECRET_KEY}
+    depends_on:
+      - postgres
+      - redis
+    volumes:
+      - ./app:/app
+      - ./logs:/app/logs
+    command: celery -A app.tasks.celery_app worker --loglevel=info --concurrency=4
+    networks:
+      - tradeos-network
+
+  celery-beat:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-tradeos_user}:${POSTGRES_PASSWORD:-tradeos_password}@postgres/${POSTGRES_DB:-tradeos_db}
+      REDIS_URL: redis://redis:6379/0
+      SECRET_KEY: ${SECRET_KEY}
+    depends_on:
+      - postgres
+      - redis
+    volumes:
+      - ./app:/app
+      - ./logs:/app/logs
+    command: celery -A app.tasks.celery_app beat --loglevel=info
+    networks:
+      - tradeos-network
+
+  flower:
+    image: mher/flower:1.2
+    environment:
+      CELERY_BROKER_URL: redis://redis:6379/0
+      FLOWER_PORT: 5555
+    ports:
+      - "5555:5555"
+    depends_on:
+      - redis
+      - celery-worker
+    networks:
+      - tradeos-network
+
+  # Мок-сервер 1С для тестирования (опционально)
+  mock-1c:
+    image: python:3.11-alpine
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./mock_1c:/app
+    working_dir: /app
+    command: >
+      sh -c "
+        pip install fastapi uvicorn &&
+        uvicorn mock_server:app --host 0.0.0.0 --port 8080
+      "
+    networks:
+      - tradeos-network
+
+networks:
+  tradeos-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:
